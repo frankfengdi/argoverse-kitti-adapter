@@ -71,10 +71,20 @@ cam_id = 0
 # sample rate to avoid sequential data (original 10Hz)
 sample_rate = 100
 
-# Setup the data dir and target dir
+# set up the data dir and target dir
 data_dir_list = ['train1/', 'val/']#['train1/', 'train2/', 'train3/', 'train4/', 'val/']
 goal_dir = root_dir + 'argo_kitti/'
 goal_subdir = goal_dir + 'training/'
+
+
+# when set True, create drivable road maps and ground maps as rasterized maps with 1x1 meters
+create_map = False
+map_x_limit = [-40, 40] # lateral distance
+map_y_limit = [0, 70] # longitudinal distance
+raster_size = 1.0 # argoverse map resolution (meter)
+if create_map:
+    from argoverse.map_representation.map_api import ArgoverseMap
+    argoverse_map = ArgoverseMap()
 
 ####################################################################
 if not os.path.exists(goal_dir): os.mkdir(goal_dir)
@@ -131,6 +141,9 @@ for dr in data_dir_list:
 
     for log_id in argoverse_loader.log_list:
         argoverse_data= argoverse_loader.get(log_id)
+        city_name = argoverse_data.city_name
+        ground_height_mat, npyimage_to_city_se2_mat = argoverse_map.get_rasterized_ground_height(city_name) # map information of the city
+
         for cam in cams:
             # Recreate the calibration file content 
             calibration_data=calibration.load_calib(data_dir+log_id+'/vehicle_calibration_info.json')[cam]
@@ -157,33 +170,56 @@ for dr in data_dir_list:
     {}
     {}
          """.format(L1,L2,L3,L4,L5,L6,L7)
-            
-            l=0 # data index in a log file
 
             # Loop through the each lidar frame (10Hz) to copy and reconfigure all images, lidars, calibration files, and label files.  
-            for timestamp in argoverse_data.lidar_timestamp_list[::sample_rate]:
-                # Save lidar file into .bin format under the new directory 
-                lidar_file_path= data_dir + log_id + '/lidar/PC_' + str(timestamp) + '.ply'
-                target_lidar_file_path= goal_subdir + 'velodyne/'+ str(i).zfill(6) + '.bin'
+            lidar_timestamp_list = argoverse_data.lidar_timestamp_list
+            frame_idx_list = range(lidar_timestamp_list)
 
-                lidar_data=load_ply(lidar_file_path)
-                lidar_data_augmented=np.concatenate((lidar_data,np.zeros([lidar_data.shape[0],1])),axis=1)
-                lidar_data_augmented=lidar_data_augmented.astype('float32')
+            for frame_idx, timestamp in zip(frame_idx_list[::sample_rage], lidar_timestamp_list[::sample_rate]):
+                # Save lidar file into .bin format under the new directory 
+                lidar_file_path = data_dir + log_id + '/lidar/PC_' + str(timestamp) + '.ply'
+                target_lidar_file_path = goal_subdir + 'velodyne/'+ str(i).zfill(6) + '.bin'
+
+                lidar_data = argoverse_data.get_lidar(frame_idx)
+                #lidar_data = load_ply(lidar_file_path)
+                lidar_data_augmented = np.concatenate((lidar_data,np.zeros([lidar_data.shape[0],1])),axis=1) # intensity
+                lidar_data_augmented = lidar_data_augmented.astype('float32')
                 lidar_data_augmented.tofile(target_lidar_file_path)
 
                 # Save the image file into .png format under the new directory 
-                cam_file_path=argoverse_data.image_list_sync[cam][l]
-                target_cam_file_path= goal_subdir +'image_2/' + str(i).zfill(6) + '.png'
+                cam_file_path = argoverse_data.image_list_sync[cam][frame_idx]
+                target_cam_file_path = goal_subdir +'image_2/' + str(i).zfill(6) + '.png'
                 copyfile(cam_file_path,target_cam_file_path)
 
                 file=open(goal_subdir+'calib/' + str(i).zfill(6) + '.txt','w+')
                 file.write(file_content)
                 file.close()
 
-                label_object_list= argoverse_data.get_label_object(l)
+                label_object_list = argoverse_data.get_label_object(frame_idx)
                 file=open(goal_subdir +  'label_2/' + str(i).zfill(6) + '.txt','w+')
-                l+=1
 
+                # For map information
+                if create_map:
+                    # first generate meshgrid 
+                    city_coord_x, city_coord_y, _ = argoverse_data.get_pose(frame_index).translation # ego vehicle pose in the city coordinate
+                    city_coord_x_range = np.arange(city_coord_x + map_x_limit[0], city_coord_x + map_x_limit[1] + 1, raster_size)
+                    city_coord_y_range = np.arange(city_coord_y + map_y_limit[0], city_coord_y + map_y_limit[1] + 1, raster_size)
+                    xx, yy = np.meshgrid(city_coord_x_range, city_coord_y_range)
+                    xv, yv = xx.flatten(), yy.flatten()
+                    city_coords = np.array([xv,yv]).T
+                    city_coords = np.round(city_coords).astype(np.int64)
+
+                    # then generate height info
+                    zv = argoverse_map.get_ground_height_at_xy(city_coords, city_name)
+                    # we do not care the ground height for non-drivable areas
+                    drivable_area_bool = am.get_raster_layer_points_boolean(city_coords, city_name, "driveable_area")
+                    non_drivable_area_bool = ~drivable_area_bool
+                    zv[non_drivable_area_bool] = -1000 # set as invalid values
+
+                    ground_height_map = zv.reshape([city_coord_y_range.shape[0], city_coord_x_range.shape[0]]) # in the city coordinate
+                    drivable_binary_map = drivable_area_bool.reshape([city_coord_y_range.shape[0], city_coord_x_range.shape[0]])
+
+                # For each object label
                 for detected_object in label_object_list:
                     classes= detected_object.label_class
                     occulusion= round(detected_object.occlusion/25)
@@ -261,7 +297,7 @@ for dr in data_dir_list:
                 if i< total_number:
                     bar.update(i+1)
 
-                # store mapping txt
+                # store index txt
                 if dr == 'val/': 
                     file=open(goal_subdir+'val.txt','a')
                     file.write(str(i).zfill(6)+' \n')
