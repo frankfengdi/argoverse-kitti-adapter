@@ -21,12 +21,12 @@ from argoverse.utils.cv2_plotting_utils import draw_clipped_line_segment
 from argoverse.utils.se3 import SE3
 from argoverse.utils.transform import quat2rotmat
 import math
-import os
 from typing import Union
-import numpy as np
 import pyntcloud
 import progressbar
 from time import sleep
+from pyquaternion import Quaternion
+from scipy.spatial.transform import Rotation as R
 
 """
 Your original file directory is:
@@ -46,7 +46,7 @@ argodataset
 """
 ####CONFIGURATION#################################################
 # Root directory
-root_dir= '/mnt/data/argo/argoverse-tracking/'
+root_dir= '/media/vision/HDD Storage/data/argoverse/argoverse-tracking/'
 
 # Maximum thresholding distance for labelled objects
 # (Object beyond this distance will not be labelled)
@@ -65,19 +65,18 @@ cams_all = ['ring_front_center',
  'ring_side_left',
  'ring_side_right']
 
-# When set -1, store data from all cameras, otherwise choose only of them
+# When set -1, store data from all cameras, otherwise choose only of them from cams_all
 cam_id = 0
 
-# sample rate to avoid sequential data (original 10Hz)
-sample_rate = 100
+# Sample rate to avoid sequential data (original 10Hz)
+sample_rate = 5
 
-# set up the data dir and target dir
-data_dir_list = ['train1/', 'val/']#['train1/', 'train2/', 'train3/', 'train4/', 'val/']
-goal_dir = root_dir + 'argo_kitti/'
+# Set up the data dir and target dir
+data_dir_list = ['train1/', 'train2/', 'train3/', 'train4/', 'val/']
+goal_dir = root_dir + 'argoverse-kitti/'
 goal_subdir = goal_dir + 'training/'
 
-
-# when set True, create drivable road maps and ground maps as rasterized maps with 1x1 meters
+# When set True, create drivable road maps and ground maps as rasterized maps with 1x1 meters
 create_map = False
 map_x_limit = [-40, 40] # lateral distance
 map_y_limit = [0, 70] # longitudinal distance
@@ -97,20 +96,6 @@ if not os.path.exists(goal_subdir):
     os.mkdir(goal_subdir+'velodyne_reduced')
 
 _PathLike = Union[str, "os.PathLike[str]"]
-def load_ply(ply_fpath: _PathLike) -> np.ndarray:
-    """Load a point cloud file from a filepath.
-    Args:
-        ply_fpath: Path to a PLY file
-    Returns:
-        arr: Array of shape (N, 3)
-    """
-
-    data = pyntcloud.PyntCloud.from_file(os.fspath(ply_fpath))
-    x = np.array(data.points.x)[:, np.newaxis]
-    y = np.array(data.points.y)[:, np.newaxis]
-    z = np.array(data.points.z)[:, np.newaxis]
-
-    return np.concatenate((x, y, z), axis=1)
 
 i = 0 # kitti data index 
 for dr in data_dir_list:
@@ -139,23 +124,34 @@ for dr in data_dir_list:
     print('Progress:')
     bar.start()
 
-    for log_id in argoverse_loader.log_list:
+    for log_id_n, log_id in enumerate(argoverse_loader.log_list):
         argoverse_data= argoverse_loader.get(log_id)
         city_name = argoverse_data.city_name
-        ground_height_mat, npyimage_to_city_se2_mat = argoverse_map.get_rasterized_ground_height(city_name) # map information of the city
+        
+        if create_map: 
+            ground_height_mat, npyimage_to_city_se2_mat = argoverse_map.get_rasterized_ground_height(city_name) # map information of the city
 
         for cam in cams:
             # Recreate the calibration file content 
             calibration_data=calibration.load_calib(data_dir+log_id+'/vehicle_calibration_info.json')[cam]
+            
+            extrinsic= calibration_data.extrinsic
+            ext_rot= R.from_matrix(extrinsic[0:3,0:3].T)
+            trans= -(extrinsic[0:3,3]).reshape(3,1)
+            extrinsic_kitti= np.hstack((extrinsic[0:3,0:3],-trans))
+
+            #print(extrinsic)
             L3='P2: '
             for j in calibration_data.K.reshape(1,12)[0]:
                 L3= L3+ str(j)+ ' '
             L3=L3[:-1]
 
             L6= 'Tr_velo_to_cam: '
-            for k in calibration_data.extrinsic.reshape(1,16)[0][0:12]:
+            for k in extrinsic_kitti.reshape(1,12)[0][0:12]:
                 L6= L6+ str(k)+ ' '
             L6=L6[:-1]
+
+
             L1='P0: 0 0 0 0 0 0 0 0 0 0 0 0'
             L2='P1: 0 0 0 0 0 0 0 0 0 0 0 0'
             L4='P3: 0 0 0 0 0 0 0 0 0 0 0 0'
@@ -163,25 +159,24 @@ for dr in data_dir_list:
             L7='Tr_imu_to_velo: 0 0 0 0 0 0 0 0 0 0 0 0'
 
             file_content="""{}
-    {}
-    {}
-    {}
-    {}
-    {}
-    {}
-         """.format(L1,L2,L3,L4,L5,L6,L7)
+{}
+{}
+{}
+{}
+{}
+{}
+     """.format(L1,L2,L3,L4,L5,L6,L7)
+            l=0
 
             # Loop through the each lidar frame (10Hz) to copy and reconfigure all images, lidars, calibration files, and label files.  
             lidar_timestamp_list = argoverse_data.lidar_timestamp_list
-            frame_idx_list = range(lidar_timestamp_list)
+            frame_idx_list = range(len(lidar_timestamp_list))
 
-            for frame_idx, timestamp in zip(frame_idx_list[::sample_rage], lidar_timestamp_list[::sample_rate]):
+            for frame_idx in frame_idx_list[::sample_rate]:
                 # Save lidar file into .bin format under the new directory 
-                lidar_file_path = data_dir + log_id + '/lidar/PC_' + str(timestamp) + '.ply'
                 target_lidar_file_path = goal_subdir + 'velodyne/'+ str(i).zfill(6) + '.bin'
 
                 lidar_data = argoverse_data.get_lidar(frame_idx)
-                #lidar_data = load_ply(lidar_file_path)
                 lidar_data_augmented = np.concatenate((lidar_data,np.zeros([lidar_data.shape[0],1])),axis=1) # intensity
                 lidar_data_augmented = lidar_data_augmented.astype('float32')
                 lidar_data_augmented.tofile(target_lidar_file_path)
@@ -220,15 +215,18 @@ for dr in data_dir_list:
                     drivable_binary_map = drivable_area_bool.reshape([city_coord_y_range.shape[0], city_coord_x_range.shape[0]])
 
                 # For each object label
+                has_object = False
                 for detected_object in label_object_list:
-                    classes= detected_object.label_class
-                    occulusion= round(detected_object.occlusion/25)
-                    height= detected_object.height
-                    length= detected_object.length
-                    width= detected_object.width
-                    truncated= 0
+                    quat= Quar = R.from_quat(detected_object.quaternion)
+                    classes = detected_object.label_class
+                    occulusion = round(detected_object.occlusion/25)
+                    height = detected_object.height
+                    length = detected_object.length
+                    width = detected_object.width
+                    center= detected_object.translation # in ego frame, [x,y,z]
+                    quaternion = detected_object.quaternion #rot_w, rot_x, rot_y, rot_z
 
-                    center= detected_object.translation # in ego frame 
+                    truncated= 0
 
                     corners_ego_frame=detected_object.as_3d_bbox() # all eight points in ego frame 
                     corners_cam_frame= calibration_data.project_ego_to_cam(corners_ego_frame) # all eight points in the camera frame 
@@ -240,9 +238,10 @@ for dr in data_dir_list:
                     center_cam_frame= calibration_data.project_ego_to_cam(np.array([center]))
 
                     # flag to set bboxes out of image FOV ignored 
-                    label_keep = 0<center_cam_frame[0][2]<max_d #and 0<image_bbox[0]<1920 and 0<image_bbox[1]<1200 and 0<image_bbox[2]<1920 and  0<image_bbox[3]<1200
-                    
+                    label_keep = 0<center_cam_frame[0][2]<max_d and 0<image_bbox[0]<1920 and 0<image_bbox[1]<1200 and 0<image_bbox[2]<1920 and 0<image_bbox[3]<1200
+
                     if not need_full_label and label_keep or need_full_label:
+                        has_object = True
                         # the center coordinates in cam frame we need for KITTI 
                         # for the orientation, we choose point 1 and point 5 for application 
                         p1= corners_cam_frame[1]
@@ -250,9 +249,18 @@ for dr in data_dir_list:
                         dz=p1[2]-p5[2]
                         dx=p1[0]-p5[0]
                         # the orientation angle of the car
-                        angle= math.atan2(dz,dx)
+                        angle= ext_rot * quat
+                        angle=angle.as_euler('zyx')[1]
+                        angle=-1*angle
+                        angle = (angle + np.pi) % (2 * np.pi) - np.pi 
                         beta= math.atan2(center_cam_frame[0][2],center_cam_frame[0][0])
-                        alpha= angle + beta - math.pi/2
+                        alpha= (angle-beta + np.pi) % (2 * np.pi) - np.pi 
+
+                        #alpha = angle + beta - math.pi/2
+                        tr_x = center_cam_frame[0][0] # x lateral
+                        tr_y = center_cam_frame[0][1] + height*0.5 # y vertical (negative)
+                        tr_z = center_cam_frame[0][2] # z longitudinal
+
 
                         '''
                                             #Values    Name      Description
@@ -285,31 +293,36 @@ for dr in data_dir_list:
                             round(height,2), 
                             round(width,2),
                             round(length,2), 
-                            round(center_cam_frame[0][0],2), # x lateral
-                            round(center_cam_frame[0][1]+height*0.5,2), # y vertical (negative)
-                            round(center_cam_frame[0][2],2), # z longitudinal
+                            round(tr_x,2), 
+                            round(tr_y,2), 
+                            round(tr_z,2), 
                             round(angle,2))                
 
                         file.write(line)
 
                 file.close()
+
+
+                # store index txt
+                if dr == 'val/' and has_object: 
+                    file=open(goal_subdir+'val.txt','a')
+                    file.write(str(i).zfill(6)+' \n')
+                    file.close()
+                elif dr == 'test/' and has_object:
+                    file=open(goal_subdir+'test.txt','a')
+                    file.write(str(i).zfill(6)+' \n')
+                    file.close()
+                elif has_object: # training
+                    file=open(goal_subdir+'train.txt','a')
+                    file.write(str(i).zfill(6)+' \n')
+                    file.close()
+
                 i+= 1
                 if i< total_number:
                     bar.update(i+1)
 
-                # store index txt
-                if dr == 'val/': 
-                    file=open(goal_subdir+'val.txt','a')
-                    file.write(str(i).zfill(6)+' \n')
-                    file.close()
-                elif dr == 'test/':
-                    file=open(goal_subdir+'test.txt','a')
-                    file.write(str(i).zfill(6)+' \n')
-                    file.close()
-                else:
-                    file=open(goal_subdir+'train.txt','a')
-                    file.write(str(i).zfill(6)+' \n')
-                    file.close()
+                #print('i = ',str(i),' log_id = ',log_id_n,' frame_idx',frame_idx, ' log_id = ', log_id)
+
 
         bar.finish()
 
