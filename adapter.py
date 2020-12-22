@@ -7,6 +7,9 @@
 # Author: Yiyang Zhou 
 # Email: yiyang.zhou@berkeley.edu
 
+# Extension: Di Feng
+# Email: di.feng@berkeley.edu
+
 print('\nLoading files...')
 
 import argoverse
@@ -19,13 +22,12 @@ import numpy as np
 from argoverse.utils.calibration import CameraConfig
 from argoverse.utils.cv2_plotting_utils import draw_clipped_line_segment
 from argoverse.utils.se3 import SE3
-from argoverse.utils.transform import quat2rotmat
+from argoverse.utils.transform import quat2rotmat, quat_argo2scipy, quat_argo2scipy_vectorized
 import math
 from typing import Union
 import pyntcloud
 import progressbar
 from time import sleep
-from pyquaternion import Quaternion
 from scipy.spatial.transform import Rotation as R
 
 """
@@ -85,6 +87,20 @@ if create_map:
     from argoverse.map_representation.map_api import ArgoverseMap
     argoverse_map = ArgoverseMap()
 
+# Official categorization from the paper "Train in Germany, Test in The USA: Making 3D Object Detectors Generalize", from Xiangyu Chen et al. CVPR2020
+# Information provided by Xiangyu Chen by courtesy xc429@cornell.edu
+CLASS_MAP = {
+    "VEHICLE": "Car",
+    "PEDESTRIAN": "Pedestrian",
+    "LARGE_VEHICLE": "Truck",
+    "BICYCLIST": "Cyclist",
+    "BUS": "Truck",
+    "TRAILER": "Truck",
+    "MOTORCYCLIST": "Cyclist",
+    "EMERGENCY_VEHICLE": "Van",
+    "SCHOOL_BUS": "Truck"
+}
+
 ####################################################################
 if not os.path.exists(goal_dir): os.mkdir(goal_dir)
 if not os.path.exists(goal_subdir): 
@@ -131,16 +147,14 @@ for dr in data_dir_list:
         if create_map: 
             ground_height_mat, npyimage_to_city_se2_mat = argoverse_map.get_rasterized_ground_height(city_name) # map information of the city
 
-        for cam in cams:
+        for cam in cams: 
             # Recreate the calibration file content 
-            calibration_data=calibration.load_calib(data_dir+log_id+'/vehicle_calibration_info.json')[cam]
-            
+            calibration_data = argoverse_data.get_calibration(cam)
             extrinsic= calibration_data.extrinsic
             ext_rot= R.from_matrix(extrinsic[0:3,0:3].T)
             trans= -(extrinsic[0:3,3]).reshape(3,1)
             extrinsic_kitti= np.hstack((extrinsic[0:3,0:3],-trans))
 
-            #print(extrinsic)
             L3='P2: '
             for j in calibration_data.K.reshape(1,12)[0]:
                 L3= L3+ str(j)+ ' '
@@ -166,7 +180,6 @@ for dr in data_dir_list:
 {}
 {}
      """.format(L1,L2,L3,L4,L5,L6,L7)
-            l=0
 
             # Loop through the each lidar frame (10Hz) to copy and reconfigure all images, lidars, calibration files, and label files.  
             lidar_timestamp_list = argoverse_data.lidar_timestamp_list
@@ -217,14 +230,15 @@ for dr in data_dir_list:
                 # For each object label
                 has_object = False
                 for detected_object in label_object_list:
-                    quat= Quar = R.from_quat(detected_object.quaternion)
-                    classes = detected_object.label_class
+                    if detected_object.label_class not in CLASS_MAP.keys(): continue # skip this object of non-interest class
+                    classes = CLASS_MAP[detected_object.label_class]
+                    quaternion = detected_object.quaternion # w, x, y, z
+                    quat = R.from_quat(quaternion)
                     occulusion = round(detected_object.occlusion/25)
                     height = detected_object.height
                     length = detected_object.length
                     width = detected_object.width
-                    center= detected_object.translation # in ego frame, [x,y,z]
-                    quaternion = detected_object.quaternion #rot_w, rot_x, rot_y, rot_z
+                    center= detected_object.translation # in ego frame, [x,y,z] with with x forward, y left, and z up
 
                     truncated= 0
 
@@ -249,18 +263,24 @@ for dr in data_dir_list:
                         dz=p1[2]-p5[2]
                         dx=p1[0]-p5[0]
                         # the orientation angle of the car
-                        angle= ext_rot * quat
-                        angle=angle.as_euler('zyx')[1]
-                        angle=-1*angle
-                        angle = (angle + np.pi) % (2 * np.pi) - np.pi 
+                        ### CVPR solution:
+                        dcm_LiDAR = argoverse.utils.transform.quat2rotmat(quaternion) 
+                        #!!Note that libraries such as Scipy expect a quaternion in scalar-last [x, y, z, w] format, 
+                        #whereas at Argo we work with scalar-first [w, x, y, z] format, so we convert between the
+                        #two formats here. We use the [w, x, y, z] order because this corresponds to the
+                        #multidimensional complex number `w + ix + jy + kz`.
+
+                        dcm_cam = calibration_data.R.dot(dcm_LiDAR.dot(calibration_data.R.T))
+                        rot_y = -np.pi * 0.5 + R.from_matrix(dcm_cam).as_rotvec()[1]
+                        angle = np.arctan2(np.sin(rot_y), np.cos(rot_y))
+                        ###
+
                         beta= math.atan2(center_cam_frame[0][2],center_cam_frame[0][0])
                         alpha= (angle-beta + np.pi) % (2 * np.pi) - np.pi 
 
-                        #alpha = angle + beta - math.pi/2
-                        tr_x = center_cam_frame[0][0] # x lateral
-                        tr_y = center_cam_frame[0][1] + height*0.5 # y vertical (negative)
-                        tr_z = center_cam_frame[0][2] # z longitudinal
-
+                        tr_x = center_cam_frame[0][0] # x lateral (right)
+                        tr_y = center_cam_frame[0][1] + height*0.5 # y vertical (down)
+                        tr_z = center_cam_frame[0][2] # z longitudinal (forward)
 
                         '''
                                             #Values    Name      Description
