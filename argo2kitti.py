@@ -448,6 +448,43 @@ def format_data(data, path, start_idx, num_workers):
     with open(path["list"], "w") as f:
         f.write("\n".join(index))
 
+def clean_empty_frame(kitti_path):
+    """
+    clean up frame idx in train, val, and test.txt, which does not have any objects
+
+    Note that for the PCDet library, it is required that input label frame should have objects
+    Run this function to prepare data for PCDet.
+    """
+    mapping_path = os.path.join(kitti_path, "ImageSets")
+    if not os.path.exists(mapping_path): os.mkdir(mapping_path)
+    train_path = os.path.join(kitti_path, "train.txt")
+    val_path = os.path.join(kitti_path, "val.txt")
+    label_path = os.path.join(kitti_path,'label_2')
+
+    #For train split
+    sample_id_list = [x.strip() for x in open(train_path).readlines()]
+    sample_id_list_filter = []
+    for sample_id in sample_id_list:
+        if os.path.exists(os.path.join(label_path, f"{sample_id}.txt")):
+            if len(open(os.path.join(label_path, f"{sample_id}.txt")).readlines())>0: # there exist objects
+                sample_id_list_filter.append(sample_id)
+    # write list back
+    with open(os.path.join(mapping_path, "train.txt"), "w") as f:
+        f.write("\n".join(sample_id_list_filter))
+    print('Preprocessing train.txt done, orignal length = ', len(sample_id_list), ' after filtering length = ', len(sample_id_list_filter))
+   
+    #For val split
+    sample_id_list = [x.strip() for x in open(val_path).readlines()]
+    sample_id_list_filter = []
+    for sample_id in sample_id_list:
+        if os.path.exists(os.path.join(label_path, f"{sample_id}.txt")):
+            if len(open(os.path.join(label_path, f"{sample_id}.txt")).readlines())>0: # there exist objects
+                sample_id_list_filter.append(sample_id)
+    # write list back
+    with open(os.path.join(mapping_path, "val.txt"), "w") as f:
+        f.write("\n".join(sample_id_list_filter))
+    print('Preprocessing val.txt done, orignal length = ', len(sample_id_list), ' after filtering length = ', len(sample_id_list_filter))
+
 
 def argo_to_kitti(argo_path, kitti_path, worker=16, seed=19260817):
     argo_path = os.path.join(argo_path, "argoverse-tracking")
@@ -509,6 +546,7 @@ def argo_to_kitti(argo_path, kitti_path, worker=16, seed=19260817):
     
 if __name__ == "__main__":
     argo_path = '/media/vision/HDD Storage/data/argoverse/'
-    kitti_path = '/media/vision/HDD Storage/data/argoverse/argoverse-tracking/argoverse-kitti/'
-    #if not os.path.exists(kitti_path): os.mkdir(kitti_path)
+    kitti_path = '/media/vision/HDD Storage/data/argoverse/argoverse-kitti/'
     argo_to_kitti(argo_path, kitti_path)
+    
+    #clean_empty_frame(kitti_path) 
