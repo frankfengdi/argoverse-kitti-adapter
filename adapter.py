@@ -87,7 +87,7 @@ cam_id = 0 # Choose only one of camera as reference. TODO: save labels for all c
 cam = cams_all[cam_id]
 
 # Sample rate to avoid sequential data (original 10Hz)
-sample_rate = 5
+sample_rate = 50
 
 # Map info
 create_map = False # When set True, create drivable road maps and ground maps as rasterized maps with 1x1 meters
@@ -95,7 +95,7 @@ map_x_limit = [-40, 40] # lateral distance
 map_y_limit = [0, 70] # longitudinal distance
 raster_size = 1.0 # argoverse map resolution (meter)
 
-create_map_semantics = False # When set True, create "velodyne_semantics" to append lidar data with map information
+create_map_semantics = True # When set True, create "velodyne_semantics" to append lidar data with map information
 
 if create_map or create_map_semantics:
     from argoverse.map_representation.map_api import ArgoverseMap
@@ -257,7 +257,7 @@ def adapter():
                     ''' 
                     #TODO: consider to append features directly to lidar.bin file, instead of creating new files
                     city_to_egovehicle_se3 = argoverse_data.get_pose(frame_idx) # city coordinate transformer
-                    target_lidar_semantics_file_path = goal_subdir + 'velodyne_semantics/'+ str(kitti_idx).zfill(6) + '.txt'
+                    target_lidar_semantics_file_path = goal_subdir + 'velodyne_semantics/'+ str(kitti_idx).zfill(6) + '.bin'
                     
                     lidar_data_city_coords = city_to_egovehicle_se3.transform_point_cloud(lidar_data) # ego-vehilce coordinate to city coordinate
                     
@@ -273,8 +273,8 @@ def adapter():
                     ground_data_ego_coords = city_to_egovehicle_se3.inverse_transform_point_cloud(ground_data_city_coords[drivable_area_bool])
 
                     ground_heights = -1000 * np.ones(lidar_ground_bool.shape[0]) # only drivable area has ground heights, other areas are set to be 1000!
+                    
                     i = 0
-
                     for j, v in enumerate(drivable_area_bool):
                         if v: 
                             ground_heights[j] = ground_data_ego_coords[i,2]
@@ -392,7 +392,7 @@ def adapter():
                     file.write(str(kitti_idx).zfill(6)+' \n')
                     file.close()
                 elif has_object: # training
-                    file=open(imageset_dir + 'train.txt','a')
+                    file=open(imageset_dir + '/train.txt','a')
                     file.write(str(kitti_idx).zfill(6)+' \n')
                     file.close()
 
@@ -469,8 +469,14 @@ def print_statistics(object_statistics, map_statistics):
             print('Center_z min: ', round(minimal[4],3), ' max: ', round(maximal[4],3), ' mean: ', round(mean[4],3), ' var: ', round(variance[4],3))
             print('\n')
 
-    print('=============  plane statistics  =============')
-    print(' coming soon')
+        plane = map_statistics['plane']
+        plane = np.array(plane)
+        plain_data = plane.mean(axis=0)
+        f.write('=============  plane statistics  =============')
+        f.write('Plane min: ' + str(round(plain_data[0],3)) + ' max: '+ str(round(plain_data[1],3)) + ' mean: ' + str(round(plain_data[2], 3)) + ' var: ' + str(round(plain_data[3], 3)) + '\n')
+        print('=============  plane statistics  =============')
+        print('Plane min: ', round(plain_data[0],3), ' max: ', round(plain_data[1],3), ' mean: ', round(plain_data[2], 3), ' var: ', round(plain_data[3], 3))
+    
 
 
 if __name__ == "__main__":
