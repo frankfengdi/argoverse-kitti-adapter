@@ -8,6 +8,10 @@ import pandas as pd
 from kitti_util import *
 from pylab import *
 from matplotlib.lines import Line2D
+import pickle
+import pandas as pd
+
+
 # ==============================================================================
 #                                                         POINT_CLOUD_2_BIRDSEYE
 # ==============================================================================
@@ -180,80 +184,193 @@ def draw_box(ax, vertices, axes=[0, 1, 2], color='black'):
         ax.plot(*vertices[:, connection], c=color, lw=0.5)
  
  
-def read_detection(path):
-    df = pd.read_csv(path, header=None, sep=' ', usecols=range(15))
-    df.columns = ['type', 'truncated', 'occluded', 'alpha', 'bbox_left', 'bbox_top',
-                'bbox_right', 'bbox_bottom', 'height', 'width', 'length', 'pos_x', 'pos_y', 'pos_z', 'rot_y']
-    #df = df[df['type']=='VEHICLE'] # PEDESTRIAN
+def read_detection(path, score=False):
+    if score:
+        df = pd.read_csv(path, header=None, sep=' ', usecols=range(16))
+        df.columns = ['type', 'truncated', 'occluded', 'alpha', 'bbox_left', 'bbox_top',
+        'bbox_right', 'bbox_bottom', 'height', 'width', 'length', 'pos_x', 'pos_y', 'pos_z', 'rot_y', 'score']
+    else:
+        df = pd.read_csv(path, header=None, sep=' ', usecols=range(15))
+        df.columns = ['type', 'truncated', 'occluded', 'alpha', 'bbox_left', 'bbox_top',
+                    'bbox_right', 'bbox_bottom', 'height', 'width', 'length', 'pos_x', 'pos_y', 'pos_z', 'rot_y']
+
+    df = df[df['type']!='Truck']
+    df = df[df['type']!='Van']
+
     df.reset_index(drop=True, inplace=True)
     return df
 
 
-if not os.path.exists('image'): os.mkdir('image')
-data_folder = '/media/vision/HDD Storage/data/argoverse/argoverse-tracking/argoverse-kitti'
-for img_id in range(200):
-    print('img_id%06d'%img_id)
-    calib_path = data_folder+'/training/calib/%06d.txt'%img_id
-    label_path = data_folder+'/training/label_2/%06d.txt'%img_id
-    points_path = data_folder+'/training/velodyne/%06d.bin'%img_id
+def transform_detection_kitti_format(root_dir, model, epoch):
+    """
+    transform detection from .pkl file to standard kitti file
+    """
+    path = root_dir +'/dfeng/lidarMTL/output' + root_dir + 'dfeng/lidarMTL/tools/cfgs/kitti_models/' \
+            + model + '/default/eval/eval_with_train/epoch_' + str(epoch) + '/val'
+    result = pd.read_pickle(path+'/result.pkl')
+
+    if not os.path.exists(model): os.mkdir(model)
+    if not os.path.exists(model+'/'+str(epoch)): os.mkdir(model+'/'+str(epoch))
+    target_dir = model+'/'+str(epoch) + '/label_2'
+    if not os.path.exists(target_dir): os.mkdir(target_dir)
+
+    for detected_frame in result:
+        frame_id = detected_frame['frame_id']
+        name = detected_frame['name']
+        truncated = detected_frame['truncated']
+        occluded = detected_frame['occluded']
+        alpha = detected_frame['alpha']
+        bbox = detected_frame['bbox']
+        dimensions = detected_frame['dimensions'] # lhw -> hwl
+        location = detected_frame['location']
+        rotation_y = detected_frame['rotation_y']
+        score = detected_frame['score']
+
+        '''
+                            #Values    Name      Description
+        ----------------------------------------------------------------------------
+           1    type         Describes the type of object: 'Car', 'Van', 'Truck',
+                             'Pedestrian', 'Person_sitting', 'Cyclist', 'Tram',
+                             'Misc' or 'DontCare'
+           1    truncated    Float from 0 (non-truncated) to 1 (truncated), where
+                             truncated refers to the object leaving image boundaries
+           1    occluded     Integer (0,1,2,3) indicating occlusion state:
+                             0 = fully visible, 1 = partly occluded
+                             2 = largely occluded, 3 = unknown
+           1    alpha        Observation angle of object, ranging [-pi..pi]
+           4    bbox         2D bounding box of object in the image (0-based index):
+                             contains left, top, right, bottom pixel coordinates
+           3    dimensions   3D object dimensions: height, width, length (in meters)
+           3    location     3D object location x,y,z in camera coordinates (in meters)
+           1    rotation_y   Rotation ry around Y-axis in camera coordinates [-pi..pi]
+           1    score        Only for results: Float, indicating confidence in
+                             detection, needed for p/r curves, higher is better.
+        '''          
+        file = open(target_dir + '/' + frame_id + '.txt','w+')
+        for n, t, o, a, b, d, l, ry, s in zip(name, truncated, occluded, alpha, bbox, dimensions, location, rotation_y, score):
+            line = n + ' {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} \n'.format(
+                float(t),
+                float(o),
+                float(a),
+                float(b[0]),
+                float(b[1]),
+                float(b[2]),
+                float(b[3]),
+                float(d[1]), #height
+                float(d[2]), #width
+                float(d[0]), #length
+                float(l[0]), 
+                float(l[1]), 
+                float(l[2]), 
+                float(ry),
+                float(s))                
+            file.write(line)
+        file.close()
+
+def draw_bbox(ax, objects, calib, gt=False, color='cyan'):
+    for o in range(len(objects)):
+        corners_3d_cam2 = compute_3d_box_cam2(*objects.loc[o, ['height', 'width', 'length', 'pos_x', 'pos_y', 'pos_z', 'rot_y']])
+        corners_3d_velo = calib.project_rect_to_velo(corners_3d_cam2.T)
+        x1,x2,x3,x4 = corners_3d_velo[0:4,0]
+        y1,y2,y3,y4 = corners_3d_velo[0:4,1]
+        '''
+        xmax = np.max(corners_3d_velo[:, 0])
+        xmin = np.min(corners_3d_velo[:, 0])
+        ymax = np.max(corners_3d_velo[:, 1])
+        ymin = np.min(corners_3d_velo[:, 1])
+        '''
+        x1, x2, y1, y2 = transform_to_img(x1, x2, y1, y2, side_range=(-40., 40-0.05), fwd_range=(0., 80.-0.05))
+        x3, x4, y3, y4 = transform_to_img(x3, x4, y3, y4, side_range=(-40., 40-0.05), fwd_range=(0., 80.-0.05))
+        ps=[]
+        polygon = np.zeros([5,2], dtype = np.float32)
+        polygon[0,0] = x1 
+        polygon[1,0] = x2      
+        polygon[2,0] = x3 
+        polygon[3,0] = x4 
+        polygon[4,0] = x1
+
+        polygon[0,1] = y1 
+        polygon[1,1] = y2      
+        polygon[2,1] = y3 
+        polygon[3,1] = y4 
+        polygon[4,1] = y1    
+
+        line1 = [(x1,y1), (x2,y2)]
+        line2 = [(x2,y2), (x3,y3)]
+        line3 = [(x3,y3), (x4,y4)]
+        line4 = [(x4,y4), (x1,y1)]
+        (line1_xs, line1_ys) = zip(*line1)
+        (line2_xs, line2_ys) = zip(*line2)
+        (line3_xs, line3_ys) = zip(*line3)
+        (line4_xs, line4_ys) = zip(*line4)
+        ax.add_line(Line2D(line1_xs, line1_ys, linewidth=2, color=color))
+        ax.add_line(Line2D(line2_xs, line2_ys, linewidth=2, color=color))
+        ax.add_line(Line2D(line3_xs, line3_ys, linewidth=2, color=color))
+        ax.add_line(Line2D(line4_xs, line4_ys, linewidth=2, color=color))
+
+        if gt:
+            line5 = [(x1,y1), (x3,y3)]
+            line6 = [(x2,y2), (x4,y4)]
+            (line5_xs, line5_ys) = zip(*line5)
+            (line6_xs, line6_ys) = zip(*line6)
+            ax.add_line(Line2D(line5_xs, line5_ys, linewidth=2, color=color))
+            ax.add_line(Line2D(line6_xs, line6_ys, linewidth=2, color=color))
+
+        if 'score' in objects.columns:
+            classes = objects.loc[o, ['type']]
+            score = float(objects.loc[o, ['score']])*100
+            ax.text(0.5*(x1+x3), 0.5*(y1+y3), str(int(score)), color='red')
+
+    return ax
+
+def plot_single_frame(img_id, data_dir, det_model='pv_rcnn_backbone_argo_v1_D', epoch=80):
+    print('plot frame ', img_id)
+    calib_path = data_dir+'/training/calib/%06d.txt'%img_id
+    label_path = data_dir+'/training/label_2/%06d.txt'%img_id
+    points_path = data_dir+'/training/velodyne/%06d.bin'%img_id
+
     if os.path.exists(calib_path) and len(np.genfromtxt(label_path,dtype='str'))>0:
         calib = Calibration(calib_path)
         points = np.fromfile(points_path, dtype=np.float32).reshape(-1, 4)
-        df = read_detection(data_folder+'/training/label_2/%06d.txt'%img_id)
-        df.head()
+        df = read_detection(label_path)
+        
         fig = plt.figure(figsize=(10, 10))
         ax = plt.subplot(111)
 
-        top = point_cloud_2_top(points, zres=2.0, side_range=(-40., 40-0.05), fwd_range=(0., 80.-0.05))
+        top = point_cloud_2_top(points, zres=0.1, side_range=(-40., 40-0.05), fwd_range=(0., 80.-0.05), height_range=(-3, 1))
         top = np.array(top, dtype = np.float32)
+        #top[top>0] = 1
+        top = np.mean(top, axis=2)
         top[top>0] = 1
 
-        ax.imshow(top, aspect='equal')
+        ax.imshow(top, aspect='equal', cmap=plt.cm.gray)
 
-        for o in range(len(df)):
-            corners_3d_cam2 = compute_3d_box_cam2(*df.loc[o, ['height', 'width', 'length', 'pos_x', 'pos_y', 'pos_z', 'rot_y']])
-            corners_3d_velo = calib.project_rect_to_velo(corners_3d_cam2.T)
-            x1,x2,x3,x4 = corners_3d_velo[0:4,0]
-            y1,y2,y3,y4 = corners_3d_velo[0:4,1]
-            '''
-            xmax = np.max(corners_3d_velo[:, 0])
-            xmin = np.min(corners_3d_velo[:, 0])
-            ymax = np.max(corners_3d_velo[:, 1])
-            ymin = np.min(corners_3d_velo[:, 1])
-            '''
-            x1, x2, y1, y2 = transform_to_img(x1, x2, y1, y2, side_range=(-40., 40-0.05), fwd_range=(0., 80.-0.05))
-            x3, x4, y3, y4 = transform_to_img(x3, x4, y3, y4, side_range=(-40., 40-0.05), fwd_range=(0., 80.-0.05))
-            ps=[]
-            polygon = np.zeros([5,2], dtype = np.float32)
-            polygon[0,0] = x1 
-            polygon[1,0] = x2      
-            polygon[2,0] = x3 
-            polygon[3,0] = x4 
-            polygon[4,0] = x1
+        # draw ground truth
+        ax = draw_bbox(ax, df, calib, gt=True, color='lime')
 
-            polygon[0,1] = y1 
-            polygon[1,1] = y2      
-            polygon[2,1] = y3 
-            polygon[3,1] = y4 
-            polygon[4,1] = y1    
-
-
-            line1 = [(x1,y1), (x2,y2)]
-            line2 = [(x2,y2), (x3,y3)]
-            line3 = [(x3,y3), (x4,y4)]
-            line4 = [(x4,y4), (x1,y1)]
-            (line1_xs, line1_ys) = zip(*line1)
-            (line2_xs, line2_ys) = zip(*line2)
-            (line3_xs, line3_ys) = zip(*line3)
-            (line4_xs, line4_ys) = zip(*line4)
-            ax.add_line(Line2D(line1_xs, line1_ys, linewidth=2, color='cyan'))
-            ax.add_line(Line2D(line2_xs, line2_ys, linewidth=2, color='cyan'))
-            ax.add_line(Line2D(line3_xs, line3_ys, linewidth=2, color='cyan'))
-            ax.add_line(Line2D(line4_xs, line4_ys, linewidth=2, color='cyan'))
+        # draw detections
+        if det_model is not None:
+            det = read_detection(det_model +'/'+str(epoch) + '/label_2/%06d.txt'%img_id, score=True)
+            ax = draw_bbox(ax, det, calib, color='blue')
 
         plt.axis('off')
-        #plt.tight_layout()
-        #plt.draw()
-        #plt.show()
-        plt.savefig('image/%06d.png'%img_id)
+
+        image_dir = 'image' if det_model is None else det_model +'/'+str(epoch) + '/image'
+        if not os.path.exists(image_dir): os.mkdir(image_dir)
+
+        plt.savefig(image_dir + '/' + '%06d.png'%img_id)
         plt.clf()
+
+
+if __name__ == "__main__":
+    ########### CONFIGURATION ##############
+    root_dir = '/media/vision/HDD Storage/'
+    data_dir = root_dir + '/data/argoverse/argoverse-kitti'
+    model = 'pv_rcnn_backbone_argo_v1_D' # prediction 
+    epoch = 80 # epoch to evaluate
+    ########################################
+
+    #transform_detection_kitti_format(root_dir, model, epoch)
+    
+    for img_id in range(14000,18000,500):
+        plot_single_frame(img_id, data_dir, det_model=None)
