@@ -1,7 +1,6 @@
 # Adapter 
 """The code to translate Argoverse dataset to KITTI dataset format"""
 
-
 # Argoverse-to-KITTI Adapter
 
 # Author: Yiyang Zhou 
@@ -11,25 +10,27 @@
 # Email: di.feng@berkeley.edu
 
 print('\nLoading files...')
-
-import argoverse
-from argoverse.data_loading.argoverse_tracking_loader import ArgoverseTrackingLoader
 import os
 from shutil import copyfile
-from argoverse.utils import calibration
 import json
 import numpy as np
-from argoverse.utils.calibration import CameraConfig
-from argoverse.utils.cv2_plotting_utils import draw_clipped_line_segment
-from argoverse.utils.se3 import SE3
-from argoverse.utils.transform import quat2rotmat, quat_argo2scipy, quat_argo2scipy_vectorized
 import math
 from typing import Union
 import pyntcloud
 import progressbar
+from itertools import chain
 from time import sleep
 from scipy.spatial.transform import Rotation as R
 _PathLike = Union[str, "os.PathLike[str]"]
+
+import argoverse
+from argoverse.data_loading.argoverse_tracking_loader import ArgoverseTrackingLoader
+from argoverse.utils.camera_stats import RING_CAMERA_LIST, STEREO_CAMERA_LIST, get_image_dims_for_camera, STEREO_IMG_WIDTH, STEREO_IMG_HEIGHT, RING_IMG_HEIGHT, RING_IMG_WIDTH
+from argoverse.utils.calibration import CameraConfig
+from argoverse.utils.cv2_plotting_utils import draw_clipped_line_segment
+from argoverse.utils.se3 import SE3
+from argoverse.utils.transform import quat2rotmat, quat_argo2scipy, quat_argo2scipy_vectorized
+from argoverse.utils import calibration
 
 """
 Your original file directory is:
@@ -71,10 +72,6 @@ if not os.path.exists(goal_subdir):
 # (Object beyond this distance will not be labelled)
 max_d = 70
 
-# When set False, labels out of camera frames are ignored, 
-# Otherwise contain all label 
-need_full_label = False 
-
 # Camera reference setup
 cams_all = ['ring_front_center',
  'ring_front_left',
@@ -87,7 +84,10 @@ cam_id = 0 # Choose only one of camera as reference. TODO: save labels for all c
 cam = cams_all[cam_id]
 
 # Sample rate to avoid sequential data (original 10Hz)
-sample_rate = 50
+sample_rate = 1
+
+# remove ground lidar points when generating /velodyne
+remove_ground = False
 
 # Map info
 create_map = False # When set True, create drivable road maps and ground maps as rasterized maps with 1x1 meters
@@ -95,9 +95,9 @@ map_x_limit = [-40, 40] # lateral distance
 map_y_limit = [0, 70] # longitudinal distance
 raster_size = 1.0 # argoverse map resolution (meter)
 
-create_map_semantics = True # When set True, create "velodyne_semantics" to append lidar data with map information
+create_map_semantics = False # When set True, create "velodyne_semantics" to append lidar data with map information
 
-if create_map or create_map_semantics:
+if create_map or create_map_semantics or remove_ground:
     from argoverse.map_representation.map_api import ArgoverseMap
     argoverse_map = ArgoverseMap()
 
@@ -115,6 +115,20 @@ CLASS_MAP = {
     "SCHOOL_BUS": "Truck"
 }
 
+
+# save data conversion configuration
+config = '=========== Argo2KITTI conversion configuration ========== \n' + \
+        'sample_rate = {}'.format(sample_rate) + '\n' + \
+        'max_d = {}'.format(max_d) + '\n' + \
+        'selected_camera = ' + cams_all[cam_id] + '\n' + \
+        'remove_ground = {}'.format(remove_ground) + '\n' + \
+        'create_map = {}'.format(create_map) + '\n' + \
+        'create_map_semantics = {}'.format(create_map_semantics) + '\n' + \
+        '==========================================================='
+print(config)
+with open(os.path.join(goal_dir, 'config.txt'),'a') as f:
+    f.write(config)
+    f.close()
 ####################################################################
 
 
@@ -144,18 +158,19 @@ def adapter():
 
         #total_number = total_number*7 if cam_id<0 else total_number
 
-        bar = progressbar.ProgressBar(maxval=total_number, \
-            widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
+        #bar = progressbar.ProgressBar(maxval=total_number, \
+        #    widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
 
-        print('Total number of files: {}. Translation starts...'.format(total_number))
-        print('Progress:')
-        bar.start()
+        #print('Total number of files: {}. Translation starts...'.format(total_number))
+        #print('Progress:')
+        #bar.start()
 
         for log_id_n, log_id in enumerate(argoverse_loader.log_list):
             argoverse_data= argoverse_loader.get(log_id)
             city_name = argoverse_data.city_name
             
-            if create_map or create_map_semantics: ground_height_mat, npyimage_to_city_se2_mat = argoverse_map.get_rasterized_ground_height(city_name) # map information of the city
+            if create_map or create_map_semantics or remove_ground: 
+                ground_height_mat, npyimage_to_city_se2_mat = argoverse_map.get_rasterized_ground_height(city_name) # map information of the city
 
             #for cam in cams: 
 
@@ -199,9 +214,7 @@ def adapter():
             for frame_idx in frame_idx_list[::sample_rate]:
                 # Save lidar file into .bin format under the new directory 
                 target_lidar_file_path = goal_subdir + 'velodyne/'+ str(kitti_idx).zfill(6) + '.bin'
-
                 lidar_data = argoverse_data.get_lidar(frame_idx)
-
                 lidar_data_augmented = np.concatenate((lidar_data,np.zeros([lidar_data.shape[0],1])),axis=1) # intensity
                 lidar_data_augmented = lidar_data_augmented.astype('float32')
                 lidar_data_augmented.tofile(target_lidar_file_path)
@@ -239,7 +252,7 @@ def adapter():
                     ground_height_map = zv.reshape([city_coord_y_range.shape[0], city_coord_x_range.shape[0]]) # in the city coordinate
                     drivable_binary_map = drivable_area_bool.reshape([city_coord_y_range.shape[0], city_coord_x_range.shape[0]])
 
-                if create_map_semantics:
+                if create_map_semantics or remove_ground:
                     # only drivable area has lidar ground! in the drivable areas, a lidar point may belong to ground (nor object) 
                     
                     '''
@@ -257,34 +270,35 @@ def adapter():
                     ''' 
                     #TODO: consider to append features directly to lidar.bin file, instead of creating new files
                     city_to_egovehicle_se3 = argoverse_data.get_pose(frame_idx) # city coordinate transformer
-                    target_lidar_semantics_file_path = goal_subdir + 'velodyne_semantics/'+ str(kitti_idx).zfill(6) + '.bin'
-                    
                     lidar_data_city_coords = city_to_egovehicle_se3.transform_point_cloud(lidar_data) # ego-vehilce coordinate to city coordinate
-                    
                     # binary mapping
                     lidar_ground_bool = argoverse_map.get_ground_points_boolean(lidar_data_city_coords, city_name)
                     drivable_area_bool = argoverse_map.get_raster_layer_points_boolean(lidar_data_city_coords, city_name, "driveable_area")
                     
-                    # ground height
-                    ground_heights_city_coords = argoverse_map.get_ground_height_at_xy(lidar_data_city_coords, city_name) 
+                    if create_map_semantics:    
+                        target_lidar_semantics_file_path = goal_subdir + 'velodyne_semantics/'+ str(kitti_idx).zfill(6) + '.bin'    
+                        # ground height
+                        ground_heights_city_coords = argoverse_map.get_ground_height_at_xy(lidar_data_city_coords, city_name) 
+                        ground_data_city_coords = np.stack([lidar_data_city_coords[:,0], lidar_data_city_coords[:,1], ground_heights_city_coords], axis=1)
+                        ground_data_ego_coords = city_to_egovehicle_se3.inverse_transform_point_cloud(ground_data_city_coords[drivable_area_bool])
+                        ground_heights = -1000 * np.ones(lidar_ground_bool.shape[0]) # only drivable area has ground heights, other areas are set to be 1000!
+            
+                        i = 0
+                        for j, v in enumerate(drivable_area_bool):
+                            if v: 
+                                ground_heights[j] = ground_data_ego_coords[i,2]
+                                i += 1
 
-                    ground_data_city_coords = np.stack([lidar_data_city_coords[:,0], lidar_data_city_coords[:,1], ground_heights_city_coords], axis=1)
+                        lidar_semantics = np.stack([ground_heights, lidar_ground_bool, drivable_area_bool], axis=1).astype('float32')
+                        lidar_semantics.tofile(target_lidar_semantics_file_path)
 
-                    ground_data_ego_coords = city_to_egovehicle_se3.inverse_transform_point_cloud(ground_data_city_coords[drivable_area_bool])
+                        map_statistics['plane'].append([ground_heights[drivable_area_bool].min(), ground_heights[drivable_area_bool].max(), 
+                            ground_heights[drivable_area_bool].mean(), ground_heights[drivable_area_bool].var()])
 
-                    ground_heights = -1000 * np.ones(lidar_ground_bool.shape[0]) # only drivable area has ground heights, other areas are set to be 1000!
-                    
-                    i = 0
-                    for j, v in enumerate(drivable_area_bool):
-                        if v: 
-                            ground_heights[j] = ground_data_ego_coords[i,2]
-                            i += 1
-                            
-                    lidar_semantics = np.stack([ground_heights, lidar_ground_bool, drivable_area_bool], axis=1).astype('float32')
-                    lidar_semantics.tofile(target_lidar_semantics_file_path)
+                    if remove_ground:
+                        lidar_data_filtered = lidar_data_augmented[lidar_ground_bool==0, :]
+                        lidar_data_filtered.tofile(target_lidar_file_path) # overwrite the original lidar data
 
-                    map_statistics['plane'].append([ground_heights[drivable_area_bool].min(), ground_heights[drivable_area_bool].max(), 
-                        ground_heights[drivable_area_bool].mean(), ground_heights[drivable_area_bool].var()])
 
                 # For each object label
                 has_object = False
@@ -293,48 +307,68 @@ def adapter():
                     classes = CLASS_MAP[detected_object.label_class]
                     quaternion = detected_object.quaternion # w, x, y, z
                     quat = R.from_quat(quaternion)
-                    occulusion = round(detected_object.occlusion/25) #TODO: need to improve
+                    occulusion = round(detected_object.occlusion/25) #TODO: need to improve, as 25 is only valid for kitti but not for argoverse
+                
                     height = detected_object.height
                     length = detected_object.length
                     width = detected_object.width
                     center = detected_object.translation # in ego frame, [x,y,z] with with x forward, y left, and z up
 
-                    truncated = 0 #TODO: need to improve
-
                     corners_ego_frame=detected_object.as_3d_bbox() # all eight points in ego frame 
                     corners_cam_frame= calibration_data.project_ego_to_cam(corners_ego_frame) # all eight points in the camera frame 
                     image_corners= calibration_data.project_ego_to_image(corners_ego_frame)
-                    image_bbox= [min(image_corners[:,0]), min(image_corners[:,1]),max(image_corners[:,0]),max(image_corners[:,1])]
-                    # the four coordinates we need for KITTI
-                    image_bbox=[round(x) for x in image_bbox]      
-
                     center_cam_frame= calibration_data.project_ego_to_cam(np.array([center]))
+                    # the four coordinates we need for KITTI
+                    image_bbox = list(chain(np.min(image_corners, axis=0).tolist()[0:2], np.max(image_corners, axis=0).tolist()[0:2])) 
+                    
+                    # calculate truncation, 
+                    # codes following the paper "Train in Germany, Test in The USA: Making 3D Object Detectors Generalize"
+                    # author: xc429@cornell.edu
+                    inside = (0 <= image_bbox[1] < RING_IMG_HEIGHT and 0 < image_bbox[3] <= RING_IMG_HEIGHT) and (
+                        0 <= image_bbox[0] < RING_IMG_WIDTH and 0 < image_bbox[2] <= RING_IMG_WIDTH) and np.min(corners_cam_frame[:, 2], axis=0) > 0
+                    valid = (0 <= image_bbox[1] < RING_IMG_HEIGHT or 0 < image_bbox[3] <= RING_IMG_HEIGHT) and (
+                        0 <= image_bbox[0] < RING_IMG_WIDTH or 0 < image_bbox[2] <= RING_IMG_WIDTH) and np.min(corners_cam_frame[:, 2], axis=0) > 0 and detected_object.translation[0] > 0
+                    #
 
-                    # flag to set bboxes out of image FOV ignored 
-                    label_keep = 0<center_cam_frame[0][2]<max_d and 0<image_bbox[0]<1920 and 0<image_bbox[1]<1200 and 0<image_bbox[2]<1920 and 0<image_bbox[3]<1200
+                    label_keep = 0<center_cam_frame[0][2]<max_d 
 
-                    if not need_full_label and label_keep or need_full_label:
+                    # only keep labels in image FOV and in valid distance range 
+                    if valid and label_keep:
                         has_object = True
+                        truncated = valid and not inside
+                        if truncated:
+                            _bbox = [0] * 4
+                            _bbox[0] = max(0, image_bbox[0])
+                            _bbox[1] = max(0, image_bbox[1])
+                            _bbox[2] = min(RING_IMG_WIDTH, image_bbox[2])
+                            _bbox[3] = min(RING_IMG_HEIGHT, image_bbox[3])
+                            truncated = 1.0 - ((_bbox[2] - _bbox[0]) * (_bbox[3] - _bbox[1])) / ((image_bbox[2] - image_bbox[0]) * (image_bbox[3] - image_bbox[1]))
+                            image_bbox = _bbox
+                        else:
+                            truncated = 0.0
+                        ### 
+
                         # the center coordinates in cam frame we need for KITTI 
                         # for the orientation, we choose point 1 and point 5 for application 
                         p1= corners_cam_frame[1]
                         p5= corners_cam_frame[5]
                         dz=p1[2]-p5[2]
                         dx=p1[0]-p5[0]
-                        # the orientation angle of the car
+
+                        # the orientation angle of the car and the observation angle alpha
+                        # codes following the paper "Train in Germany, Test in The USA: Making 3D Object Detectors Generalize"
+                        # author: xc429@cornell.edu
                         dcm_LiDAR = argoverse.utils.transform.quat2rotmat(quaternion) 
                         #!!Note that libraries such as Scipy expect a quaternion in scalar-last [x, y, z, w] format, 
                         #whereas at Argo we work with scalar-first [w, x, y, z] format, so we convert between the
                         #two formats here. We use the [w, x, y, z] order because this corresponds to the
                         #multidimensional complex number `w + ix + jy + kz`.
-
                         dcm_cam = calibration_data.R.dot(dcm_LiDAR.dot(calibration_data.R.T))
                         rot_y = -np.pi * 0.5 + R.from_matrix(dcm_cam).as_rotvec()[1]
                         angle = np.arctan2(np.sin(rot_y), np.cos(rot_y))
-                        ###
 
-                        beta= math.atan2(center_cam_frame[0][2],center_cam_frame[0][0])
-                        alpha= (angle-beta + np.pi) % (2 * np.pi) - np.pi 
+                        alpha = -np.arctan2(center_cam_frame[0, 0], center_cam_frame[0, 2]) + rot_y
+                        # 
 
                         tr_x = center_cam_frame[0][0] # x lateral (right)
                         tr_y = center_cam_frame[0][1] + height*0.5 # y vertical (down)
@@ -397,11 +431,12 @@ def adapter():
                     file.close()
 
                 kitti_idx+= 1
-                if kitti_idx< total_number:
-                    bar.update(kitti_idx+1)
+                
+                #if kitti_idx< total_number:
+                #    bar.update(kitti_idx+1)
 
                 #print('kitti_idx = ',str(kitti_idx),' log_id = ',log_id_n,' frame_idx',frame_idx, ' log_id = ', log_id)
-            bar.finish()
+            #bar.finish()
     return object_statistics, map_statistics
 
 def subset_mapping():
@@ -469,16 +504,17 @@ def print_statistics(object_statistics, map_statistics):
             print('Center_z min: ', round(minimal[4],3), ' max: ', round(maximal[4],3), ' mean: ', round(mean[4],3), ' var: ', round(variance[4],3))
             print('\n')
 
-        plane = map_statistics['plane']
-        plane = np.array(plane)
-        plain_data = plane.mean(axis=0)
-        f.write('=============  plane statistics  =============')
-        f.write('Plane min: ' + str(round(plain_data[0],3)) + ' max: '+ str(round(plain_data[1],3)) + ' mean: ' + str(round(plain_data[2], 3)) + ' var: ' + str(round(plain_data[3], 3)) + '\n')
-        print('=============  plane statistics  =============')
-        print('Plane min: ', round(plain_data[0],3), ' max: ', round(plain_data[1],3), ' mean: ', round(plain_data[2], 3), ' var: ', round(plain_data[3], 3))
-    
-
+            plane = map_statistics['plane']
+            if len(plane):
+                plane = np.array(plane)
+                plain_data = plane.mean(axis=0)
+                f.write('=============  plane statistics  =============')
+                f.write('Plane min: ' + str(round(plain_data[0],3)) + ' max: '+ str(round(plain_data[1],3)) + ' mean: ' + str(round(plain_data[2], 3)) + ' var: ' + str(round(plain_data[3], 3)) + '\n')
+                print('=============  plane statistics  =============')
+                print('Plane min: ', round(plain_data[0],3), ' max: ', round(plain_data[1],3), ' mean: ', round(plain_data[2], 3), ' var: ', round(plain_data[3], 3))
+            
 
 if __name__ == "__main__":
     object_statistics, map_statistics = adapter()
+    subset_mapping()
     print_statistics(object_statistics, map_statistics)

@@ -337,11 +337,11 @@ def plot_single_frame(img_id, data_dir, det_model='pv_rcnn_backbone_argo_v1_D', 
         fig = plt.figure(figsize=(10, 10))
         ax = plt.subplot(111)
 
-        top = point_cloud_2_top(points, zres=0.1, side_range=(-40., 40-0.05), fwd_range=(0., 80.-0.05), height_range=(-3, 1))
+        top = point_cloud_2_top(points, zres=1, side_range=(-40., 40-0.05), fwd_range=(0., 80.-0.05), height_range=(-1.5, 4))
         top = np.array(top, dtype = np.float32)
-        #top[top>0] = 1
-        top = np.mean(top, axis=2)
         top[top>0] = 1
+        top = np.mean(top, axis=2)
+        #top[top>0] = 1
 
         ax.imshow(top, aspect='equal', cmap=plt.cm.gray)
 
@@ -372,5 +372,5 @@ if __name__ == "__main__":
 
     #transform_detection_kitti_format(root_dir, model, epoch)
     
-    for img_id in range(14000,18000,500):
-        plot_single_frame(img_id, data_dir, det_model=None)
+    for img_id in range(14000,18000,250):
+        plot_single_frame(img_id, data_dir, det_model=model, epoch=epoch)
