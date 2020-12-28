@@ -32,6 +32,7 @@ from argoverse.utils.se3 import SE3
 from argoverse.utils.transform import quat2rotmat, quat_argo2scipy, quat_argo2scipy_vectorized
 from argoverse.utils import calibration
 
+import matplotlib.pyplot as plt
 """
 Your original file directory is:
 argodataset
@@ -58,6 +59,8 @@ goal_subdir = goal_dir + 'training/'
 imageset_dir = goal_dir+'/ImageSets' # to store train val mapping
 
 if not os.path.exists(goal_dir): os.mkdir(goal_dir)
+if not os.path.exists(goal_dir+'statistics'): os.mkdir(goal_dir+'statistics') # store dataset statistics
+
 if not os.path.exists(imageset_dir): os.mkdir(imageset_dir) 
 if not os.path.exists(goal_subdir): 
     os.mkdir(goal_subdir)
@@ -66,7 +69,7 @@ if not os.path.exists(goal_subdir):
     os.mkdir(goal_subdir+'calib')
     os.mkdir(goal_subdir+'label_2')
     os.mkdir(goal_subdir+'velodyne_semantics')
-    os.mkdir(goal_subdir+'statistics') # store dataset statistics
+    
 
 # Maximum thresholding distance for labelled objects
 # (Object beyond this distance will not be labelled)
@@ -483,7 +486,7 @@ def subset_mapping():
         f.close()
 
 def print_statistics(object_statistics, map_statistics):
-    with open(imageset_dir + '/statistics.txt','a') as f:
+    with open(goal_dir+'statistics/statistics.txt','a') as f:
         for classes in object_statistics.keys():
             data = np.array(object_statistics[classes])
             minimal, maximal, mean, variance, num = data.min(axis=0), data.max(axis=0), data.mean(axis=0), data.var(axis=0), data.shape[0]
@@ -503,16 +506,55 @@ def print_statistics(object_statistics, map_statistics):
             print('Bottom_z min: ', round(minimal[3],3), ' max: ', round(maximal[3],3), ' mean: ', round(mean[3],3), ' var: ', round(variance[3],3))
             print('Center_z min: ', round(minimal[4],3), ' max: ', round(maximal[4],3), ' mean: ', round(mean[4],3), ' var: ', round(variance[4],3))
             print('\n')
+        
+            plt.figure(figsize=(15,3))
+            plt.subplot(151)
+            plt.hist(data[:,0], 20, density=True, facecolor='r', alpha=0.75)
+            plt.xlabel('Width')
+            plt.ylabel('Probability')
+            plt.title('Mean = ' + str(round(mean[0],2)))
+            plt.tight_layout()
 
-            plane = map_statistics['plane']
-            if len(plane):
-                plane = np.array(plane)
-                plain_data = plane.mean(axis=0)
-                f.write('=============  plane statistics  =============')
-                f.write('Plane min: ' + str(round(plain_data[0],3)) + ' max: '+ str(round(plain_data[1],3)) + ' mean: ' + str(round(plain_data[2], 3)) + ' var: ' + str(round(plain_data[3], 3)) + '\n')
-                print('=============  plane statistics  =============')
-                print('Plane min: ', round(plain_data[0],3), ' max: ', round(plain_data[1],3), ' mean: ', round(plain_data[2], 3), ' var: ', round(plain_data[3], 3))
-            
+            plt.subplot(152)
+            plt.hist(data[:,1], 20, density=True, facecolor='g', alpha=0.75)
+            plt.xlabel('Length')
+            plt.ylabel('Probability')
+            plt.title('Mean = ' + str(round(mean[1],2)))
+            plt.tight_layout()
+
+            plt.subplot(153)
+            plt.hist(data[:,2], 20, density=True, facecolor='b', alpha=0.75)
+            plt.xlabel('Heigth')
+            plt.ylabel('Probability')
+            plt.title('Mean = ' + str(round(mean[2],2)))
+            plt.tight_layout()
+
+            plt.subplot(154)
+            plt.hist(data[:,3], 20, density=True, facecolor='m', alpha=0.75)
+            plt.xlabel('Bottom_z (camera frame)')
+            plt.ylabel('Probability')
+            plt.title('Mean = ' + str(round(mean[3],2)))
+            plt.tight_layout()
+
+            plt.subplot(155)
+            plt.hist(data[:,4], 20, density=True, facecolor='orange', alpha=0.75)
+            plt.xlabel('Bottom_z (ego frame')
+            plt.ylabel('Probability')
+            plt.title('Mean = ' + str(round(mean[4],2)))
+            plt.tight_layout()
+
+            plt.savefig(goal_dir+'statistics/'+classes+'.pdf')
+            plt.clf()
+
+
+        plane = map_statistics['plane']
+        if len(plane):
+            plane = np.array(plane)
+            plain_data = plane.mean(axis=0)
+            f.write('=============  plane statistics  =============')
+            f.write('Plane min: ' + str(round(plain_data[0],3)) + ' max: '+ str(round(plain_data[1],3)) + ' mean: ' + str(round(plain_data[2], 3)) + ' var: ' + str(round(plain_data[3], 3)) + '\n')
+            print('=============  plane statistics  =============')
+            print('Plane min: ', round(plain_data[0],3), ' max: ', round(plain_data[1],3), ' mean: ', round(plain_data[2], 3), ' var: ', round(plain_data[3], 3))
 
 if __name__ == "__main__":
     object_statistics, map_statistics = adapter()
