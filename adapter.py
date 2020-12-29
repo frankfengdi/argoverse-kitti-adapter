@@ -179,6 +179,8 @@ def adapter():
 
             # Recreate the calibration file content 
             calibration_data = argoverse_data.get_calibration(cam)
+
+            '''
             extrinsic= calibration_data.extrinsic
             ext_rot= R.from_matrix(extrinsic[0:3,0:3].T)
             trans= -(extrinsic[0:3,3]).reshape(3,1)
@@ -201,7 +203,7 @@ def adapter():
             L5='R0_rect: 1 0 0 0 1 0 0 0 1'
             L7='Tr_imu_to_velo: 0 0 0 0 0 0 0 0 0 0 0 0'
 
-            file_content="""{}
+            calib_content="""{}
 {}
 {}
 {}
@@ -209,6 +211,9 @@ def adapter():
 {}
 {}
      """.format(L1,L2,L3,L4,L5,L6,L7)
+            '''
+
+            calib_content = convert_calib_ring(calibration_data)
 
             # Loop through the each lidar frame (10Hz) to copy and reconfigure all images, lidars, calibration files, and label files.  
             lidar_timestamp_list = argoverse_data.lidar_timestamp_list
@@ -228,11 +233,9 @@ def adapter():
                 copyfile(cam_file_path,target_cam_file_path)
 
                 file=open(goal_subdir+'calib/' + str(kitti_idx).zfill(6) + '.txt','w+')
-                file.write(file_content)
+                file.write(calib_content)
                 file.close()
 
-                label_object_list = argoverse_data.get_label_object(frame_idx)
-                file=open(goal_subdir +  'label_2/' + str(kitti_idx).zfill(6) + '.txt','w+')
 
                 # For map information
                 if create_map: 
@@ -304,6 +307,9 @@ def adapter():
 
 
                 # For each object label
+                label_object_list = argoverse_data.get_label_object(frame_idx)
+                file=open(goal_subdir +  'label_2/' + str(kitti_idx).zfill(6) + '.txt','w+')
+                
                 has_object = False
                 for detected_object in label_object_list:
                     if detected_object.label_class not in CLASS_MAP.keys(): continue # skip this object of non-interest class
@@ -441,6 +447,29 @@ def adapter():
                 #print('kitti_idx = ',str(kitti_idx),' log_id = ',log_id_n,' frame_idx',frame_idx, ' log_id = ', log_id)
             #bar.finish()
     return object_statistics, map_statistics
+
+def convert_calib_ring(calib):
+    """
+    Official implementation from the paper "Train in Germany, Test in The USA: Making 3D Object Detectors Generalize", from Xiangyu Chen et al. CVPR2020
+    Author: Xiangyu Chen, xc429@cornell.edu
+    """
+    imu = 'Tr_imu_to_velo: 9.999976000000e-01 7.553071000000e-04 -2.035826000000e-03'+\
+        ' -8.086759000000e-01 -7.854027000000e-04 9.998898000000e-01 -1.482298000000e-02 '+\
+        '3.195559000000e-01 2.024406000000e-03 1.482454000000e-02 9.998881000000e-01 -7.997231000000e-01'
+    R = 'R0_rect: '+' '.join([str(x) for x in np.eye(3).reshape(-1).tolist()])
+    velo = calib.extrinsic[:3, :]
+    velo = 'Tr_velo_to_cam: '+' '.join([str(x) for x in velo.reshape(-1).tolist()])
+
+    P2 = calib.K
+    # calibL.K = P2 = get_camera_intrinsic_matrix(calibL.calib_data['value'], 0, 0)
+    P2 = ' '.join([str(x) for x in P2.reshape(-1).tolist()])
+
+    # P3 = calibR.K
+    # calibR.bx = 0.2986
+    # # calibR.K = P3 = get_camera_intrinsic_matrix(calibR.calib_data['value'], calibR.bx, 0)
+    # P3 = ' '.join([str(x) for x in P3.reshape(-1).tolist()])
+    info = f"P0: {P2}\nP1: {P2}\nP2: {P2}\nP3: {P2}\n{R}\n{velo}\n{imu}\n"
+    return info
 
 def subset_mapping():
     """
