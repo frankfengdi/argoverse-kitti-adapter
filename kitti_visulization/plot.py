@@ -205,8 +205,8 @@ def transform_detection_kitti_format(root_dir, model, epoch):
     """
     transform detection from .pkl file to standard kitti file
     """
-    path = root_dir +'/dfeng/lidarMTL/output' + root_dir + 'dfeng/lidarMTL/tools/cfgs/kitti_models/' \
-            + model + '/default/eval/eval_with_train/epoch_' + str(epoch) + '/val'
+    path = root_dir +'dfeng/lidarMTL/output' + root_dir + 'dfeng/lidarMTL/tools/cfgs/kitti_models/' \
+            + model + '/default/eval/epoch_' + str(epoch) + '/val20/default'
     result = pd.read_pickle(path+'/result.pkl')
 
     if not os.path.exists(model): os.mkdir(model)
@@ -366,11 +366,11 @@ if __name__ == "__main__":
     ########### CONFIGURATION ##############
     root_dir = '/media/vision/HDD Storage/'
     data_dir = root_dir + '/data/argoverse/argoverse-kitti'
-    model = 'pv_rcnn_backbone_argo_v1_D' # prediction 
+    model = 'PartA2_stage1_argo_multi' # prediction 
     epoch = 80 # epoch to evaluate
     ########################################
 
-    #transform_detection_kitti_format(root_dir, model, epoch)
+    transform_detection_kitti_format(root_dir, model, epoch)
     
-    for img_id in range(14000,18000,250):
-        plot_single_frame(img_id, data_dir, det_model=model, epoch=epoch)
+    #for img_id in range(14000,18000,250):
+    #    plot_single_frame(img_id, data_dir, det_model=model, epoch=epoch)
