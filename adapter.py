@@ -57,7 +57,7 @@ _PathLike = Union[str, "os.PathLike[str]"]
 root_dir = '/media/vision/HDD Storage/data/argoverse/argoverse-tracking/' # Root directory
 # Set up the data dir and target dir
 data_dir_list = ['train1/', 'train2/', 'train3/', 'train4/', 'val/']
-goal_dir = root_dir + 'argoverse-lidar-augmented-kitti/' # 'argoverse-lidar-augmented-kitti' or 'argoverse-kitti'
+goal_dir = root_dir + 'argoverse-lidar-augmented-full-range-kitti/' # 'argoverse-lidar-augmented-kitti', 'argoverse-kitti', 'argoverse-lidar-augmented-full-range-kitti/'
 goal_subdir = goal_dir + 'training/'
 imageset_dir = goal_dir+'/ImageSets' # to store train val mapping
 
@@ -73,10 +73,12 @@ if not os.path.exists(goal_subdir):
     os.mkdir(goal_subdir+'image_2')
     os.mkdir(goal_subdir+'calib')
     os.mkdir(goal_subdir+'label_2')
-    os.mkdir(goal_subdir+'ego_vehicle_pose')
+    os.mkdir(goal_subdir+'ego_vehicle_pose') #rotation + translation matrix, city coordinate
+    os.mkdir(goal_subdir+'ego_vehicle_ground_height') #city coordinate 
 
 
 max_d = 70 # Maximum thresholding distance for labelled objects (Object beyond this distance will not be labelled)
+full_range_lidar = True #when set True, store object labels in full range
 
 # Camera reference setup
 cams_all = ['ring_front_center',
@@ -126,6 +128,7 @@ CLASS_MAP = {
 config = '=========== Argo2KITTI conversion configuration ========== \n' + \
         'sample_rate = {}'.format(sample_rate) + '\n' + \
         'max_d = {}'.format(max_d) + '\n' + \
+        'full_range_lidar = {}'.format(full_range_lidar) + '\n' + \
         'selected_camera = ' + cams_all[cam_id] + '\n' + \
         'remove_ground = {}'.format(remove_ground) + '\n' + \
         'create_map = {}'.format(create_map) + '\n' + \
@@ -232,7 +235,7 @@ def adapter():
                 target_cam_file_path = goal_subdir +'image_2/' + str(kitti_idx).zfill(6) + '.png'
                 copyfile(cam_file_path,target_cam_file_path)
 
-                with open(goal_subdir+'calib/' + str(kitti_idx).zfill(6) + '.txt','w+') as f
+                with open(goal_subdir+'calib/' + str(kitti_idx).zfill(6) + '.txt','w+') as f:
                     f.write(calib_content)
 
                 # For map information
@@ -263,7 +266,7 @@ def adapter():
                     ----------------------------------------------------------------------------
                        1    ground_height         ground height value for each lidar point. Note
                                                   that only drivable areas has valid ground height.
-                                                  invalid heights are set to be -1000
+                                                  invalid heights are set to be 0.0
                        1    lidar_ground_bool     bool, whether lidar point belongs to ground,
                                                   threshold set 0.3m according to Argoverse
                        1    drivable_area_bool    bool, whether lidar point belongs to a drivable
@@ -289,11 +292,19 @@ def adapter():
                     np.savetxt(target_pose_file_path, extrinsic_city_coords)
                     
                     if create_map_semantics:          
-                        # ground height
+                        # ground height for ego_vehicle
+                        ego_vehicle_ground_height = argoverse_map.get_ground_height_at_xy(translation_city_coords.T, city_name)
+                        target_height_file_path = goal_subdir + 'ego_vehicle_ground_height/' + str(kitti_idx).zfill(6) + '.txt'
+                        np.savetxt(target_height_file_path, ego_vehicle_ground_height)
+
+                        # ground height for every lidar points
                         ground_heights_city_coords = argoverse_map.get_ground_height_at_xy(lidar_data_city_coords, city_name) 
                         ground_data_city_coords = np.stack([lidar_data_city_coords[:,0], lidar_data_city_coords[:,1], ground_heights_city_coords], axis=1)
                         ground_data_ego_coords = city_to_egovehicle_se3.inverse_transform_point_cloud(ground_data_city_coords)
                         ground_heights = ground_data_ego_coords[:,2]
+
+                        isnan_mask = np.isnan(ground_heights)
+                        ground_heights[isnan_mask] = 0.0
 
                         ##(DEPRECATED)
                         # we only care about ground heights at drivable areas, other areas are set to be -1000!
@@ -354,10 +365,14 @@ def adapter():
                             0 <= image_bbox[0] < RING_IMG_WIDTH or 0 < image_bbox[2] <= RING_IMG_WIDTH) and np.min(corners_cam_frame[:, 2], axis=0) > 0 and detected_object.translation[0] > 0
                         #
 
-                        label_keep = 0<center_cam_frame[0][2]<max_d 
+                        if full_range_lidar:
+                            label_keep = (-max_d<=center_cam_frame[0][2]<=max_d) and (-max_d<=center_cam_frame[0][0]<=max_d)
+                        else:
+                            label_keep = 0<center_cam_frame[0][2]<max_d 
+                            label_keep = label_keep and valid
 
                         # only keep labels in image FOV and in valid distance range 
-                        if valid and label_keep:
+                        if label_keep:
                             has_object = True
                             truncated = valid and not inside
                             if truncated:
