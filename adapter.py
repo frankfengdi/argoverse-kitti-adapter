@@ -1,15 +1,11 @@
-# Adapter 
-"""The code to translate Argoverse dataset to KITTI dataset format"""
+"""The code to translate Argoverse dataset to KITTI dataset format
 
-# Argoverse-to-KITTI Adapter
+Author: Yiyang Zhou 
+Email: yiyang.zhou@berkeley.edu
 
-# Author: Yiyang Zhou 
-# Email: yiyang.zhou@berkeley.edu
+Extension: Di Feng
+Email: di.feng@berkeley.edu
 
-# Extension: Di Feng
-# Email: di.feng@berkeley.edu
-
-"""
 Your original file directory is:
 argodataset
 └── argoverse-tracking <----------------------------root_dir
@@ -24,6 +20,8 @@ argodataset
         └──8a15674a-ae5c-38e2-bc4b-f4156d384072
         └──...
 
+Acknowledgement:
+We thank Xiangyu Chen (xc429@cornell.edu) for providing useful help to convert argoverse dataset.
 """
 
 print('\nLoading files...')
@@ -73,12 +71,12 @@ if not os.path.exists(goal_subdir):
     os.mkdir(goal_subdir+'image_2')
     os.mkdir(goal_subdir+'calib')
     os.mkdir(goal_subdir+'label_2')
-    os.mkdir(goal_subdir+'ego_vehicle_pose') #rotation + translation matrix, city coordinate
-    os.mkdir(goal_subdir+'ego_vehicle_ground_height') #city coordinate 
+    os.mkdir(goal_subdir+'ego_vehicle_pose') # rotation + translation matrix, city coordinate
+    os.mkdir(goal_subdir+'ego_vehicle_ground_height') # city coordinate 
 
 
 max_d = 70 # Maximum thresholding distance for labelled objects (Object beyond this distance will not be labelled)
-full_range_lidar = True #when set True, store object labels in full range
+full_range_lidar = True # When set True, store object labels in full range
 
 # Camera reference setup
 cams_all = ['ring_front_center',
@@ -87,7 +85,7 @@ cams_all = ['ring_front_center',
  'ring_rear_left',
  'ring_rear_right',
  'ring_side_left',
- 'ring_side_right'] #All available cameras
+ 'ring_side_right'] # All available cameras
 cam_id = 0 # Choose only one of camera as reference. TODO: save labels for all cameras
 cam = cams_all[cam_id]
 
@@ -95,7 +93,7 @@ cam = cams_all[cam_id]
 sample_rate = 1 # Sample rate to avoid sequential data (original 10Hz)
 
 
-remove_ground = False # remove ground lidar points when generating /velodyne
+remove_ground = False # Remove ground lidar points when generating /velodyne
 
 # Map info
 create_map = False # When set True, create drivable road maps and ground maps as rasterized maps with 1x1 meters
@@ -156,22 +154,11 @@ def adapter():
         argoverse_loader.print_all()
         print('\n')
 
-        #cams = cams_all if cam_id<0 else [cams_all[cam_id]]
-
         # count total number of files
         total_number=0
         for q in argoverse_loader.log_list:
             path, dirs, files = next(os.walk(data_dir+q+'/lidar'))
             total_number= total_number+len(files)
-
-        #total_number = total_number*7 if cam_id<0 else total_number
-
-        #bar = progressbar.ProgressBar(maxval=total_number, \
-        #    widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
-
-        #print('Total number of files: {}. Translation starts...'.format(total_number))
-        #print('Progress:')
-        #bar.start()
 
         for log_id_n, log_id in enumerate(argoverse_loader.log_list):
             argoverse_data= argoverse_loader.get(log_id)
@@ -180,43 +167,8 @@ def adapter():
             if create_map or create_map_semantics or remove_ground: 
                 ground_height_mat, npyimage_to_city_se2_mat = argoverse_map.get_rasterized_ground_height(city_name) # map information of the city
 
-            #for cam in cams: 
-
             # Recreate the calibration file content 
             calibration_data = argoverse_data.get_calibration(cam)
-
-            '''
-            extrinsic= calibration_data.extrinsic
-            ext_rot= R.from_matrix(extrinsic[0:3,0:3].T)
-            trans= -(extrinsic[0:3,3]).reshape(3,1)
-            extrinsic_kitti= np.hstack((extrinsic[0:3,0:3],-trans))
-
-            L3='P2: '
-            for j in calibration_data.K.reshape(1,12)[0]:
-                L3= L3+ str(j)+ ' '
-            L3=L3[:-1]
-
-            L6= 'Tr_velo_to_cam: '
-            for k in extrinsic_kitti.reshape(1,12)[0][0:12]:
-                L6= L6+ str(k)+ ' '
-            L6=L6[:-1]
-
-
-            L1='P0: 0 0 0 0 0 0 0 0 0 0 0 0'
-            L2='P1: 0 0 0 0 0 0 0 0 0 0 0 0'
-            L4='P3: 0 0 0 0 0 0 0 0 0 0 0 0'
-            L5='R0_rect: 1 0 0 0 1 0 0 0 1'
-            L7='Tr_imu_to_velo: 0 0 0 0 0 0 0 0 0 0 0 0'
-
-            calib_content="""{}
-{}
-{}
-{}
-{}
-{}
-{}
-     """.format(L1,L2,L3,L4,L5,L6,L7)
-            '''
 
             calib_content = convert_calib_ring(calibration_data)
 
@@ -306,17 +258,6 @@ def adapter():
                         isnan_mask = np.isnan(ground_heights)
                         ground_heights[isnan_mask] = 0.0
 
-                        ##(DEPRECATED)
-                        # we only care about ground heights at drivable areas, other areas are set to be -1000!
-                        #ground_data_ego_coords = city_to_egovehicle_se3.inverse_transform_point_cloud(ground_data_city_coords[drivable_area_bool])
-                        #ground_heights = -1000 * np.ones(lidar_ground_bool.shape[0]) 
-                        #i = 0
-                        #for j, v in enumerate(drivable_area_bool):
-                        #    if v: 
-                        #        ground_heights[j] = ground_data_ego_coords[i,2]
-                        #        i += 1
-                        ##
-
                         lidar_semantics = np.stack([ground_heights, lidar_ground_bool, drivable_area_bool], axis=1).astype('float32')
                         lidar_data_augmented = np.concatenate((lidar_data_augmented, lidar_semantics), axis=1)
 
@@ -363,7 +304,7 @@ def adapter():
                             0 <= image_bbox[0] < RING_IMG_WIDTH and 0 < image_bbox[2] <= RING_IMG_WIDTH) and np.min(corners_cam_frame[:, 2], axis=0) > 0
                         valid = (0 <= image_bbox[1] < RING_IMG_HEIGHT or 0 < image_bbox[3] <= RING_IMG_HEIGHT) and (
                             0 <= image_bbox[0] < RING_IMG_WIDTH or 0 < image_bbox[2] <= RING_IMG_WIDTH) and np.min(corners_cam_frame[:, 2], axis=0) > 0 and detected_object.translation[0] > 0
-                        #
+                        
 
                         if full_range_lidar:
                             label_keep = (-max_d<=center_cam_frame[0][2]<=max_d) and (-max_d<=center_cam_frame[0][0]<=max_d)
@@ -384,8 +325,7 @@ def adapter():
                                 truncated = 1.0 - ((_bbox[2] - _bbox[0]) * (_bbox[3] - _bbox[1])) / ((image_bbox[2] - image_bbox[0]) * (image_bbox[3] - image_bbox[1]))
                                 image_bbox = _bbox
                             else:
-                                truncated = 0.0
-                            ### 
+                                truncated = 0.0 
 
                             # the center coordinates in cam frame we need for KITTI 
                             # for the orientation, we choose point 1 and point 5 for application 
